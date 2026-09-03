@@ -22,8 +22,8 @@ with no dead air, and Wi-Fi carries intent, never per-tick servo commands
 
 Kept from v2: /set?l=&r= (instant speeds, 500ms dead-man), /pose?l=&r=
 (absolute angles), /ws (persistent "l,r" pose stream, latest-wins),
-/servo?p=&deg=, /stats (+ act queue state), CORS, / control page (LLM box
-now speaks keyframes). Manual control (/set /pose /ws) always wins: it
+/servo?p=&deg=, /stats (+ act queue state), CORS, / control page (routine
+buttons). Manual control (/set /pose /ws) always wins: it
 clears any queued chunks the moment it arrives.
 
 Hardware: left leg = port 1, right leg = port 3. PORT 2 SOCKET IS DEAD.
@@ -37,10 +37,6 @@ Wi-Fi — three sources, tried in order (shipped chips carry NO secrets):
      "GrowBot-Setup"; join it with any phone, open http://192.168.4.1, pick your
      home Wi-Fi + enter its password — the chip saves wifi.json and reboots onto
      your network. A wrong password just lands it back in setup mode.
-
-The Anthropic key (the page's ask-Claude box) is also OPTIONAL: without it the
-box is hidden and everything else works — the creature drives /act /seq /set
-with no key on the chip. (./finish-key-rotation.sh still refreshes secrets.py.)
 
 FLASHING (plug the Pico into the Mac by USB first):
   1. open Terminal, then:  cd ~/Desktop/phone-body
@@ -56,17 +52,6 @@ import network, socket, time, json, select
 from machine import Pin
 import PicoRobotics
 from act_engine import ActEngine
-
-try:
-    from secrets import ANTHROPIC_KEY
-except Exception:
-    ANTHROPIC_KEY = ""   # optional — the page hides the ask-Claude box without it
-# SECURITY (external review H3, 2026-07-13): this server is served over an unauthenticated
-# public tunnel, so anything substituted into the HTML is world-readable via view-source.
-# We therefore NEVER embed the real key in the page — the ask-Claude box stays hidden.
-# If you want on-device "ask Claude", proxy it server-side (add a /ask route that keeps the
-# key on the Pico) instead of shipping the key to the browser.
-SERVED_KEY = ""
 
 def _load_wifi():
     try:                       # 1) provisioned by the setup hotspot
@@ -224,7 +209,7 @@ ROUTINES = {
 def speed_to_keyframes(steps):
     """/seq compatibility shim: the v2 creature app still POSTs ±1 'speed' steps.
     Map them to lean angles (90 - s*35) so old clients keep working. New code
-    (routines, LLM, /act, /pose) speaks absolute 0-180 degrees directly."""
+    (routines, /act, /pose) speaks absolute 0-180 degrees directly."""
     out = []
     for st in steps:
         try:
@@ -364,14 +349,9 @@ h1{font-size:16px;color:#7f93ab;margin:2px}
 button{font-size:17px;padding:16px;border-radius:14px;border:0;font-weight:700;
 background:#0e1622;color:#e8f6ff;border:1px solid rgba(120,160,200,.25)}
 #stop{background:#8c1d2f;grid-column:1/3;font-size:20px}
-textarea{width:100%;max-width:420px;box-sizing:border-box;background:#0e1622;color:#e8f6ff;
-border:1px solid rgba(120,160,200,.25);border-radius:14px;padding:12px;font-size:16px;min-height:64px}
-#ask{background:linear-gradient(160deg,#37e0c8,#5ab0ff);color:#04110f;width:100%;max-width:420px}
-#mic{background:#1d2a3d;width:100%;max-width:420px}
 #st{color:#7f93ab;font-size:14px;min-height:1.2em;text-align:center}
-#say{color:#37e0c8;font-size:15px;min-height:1.2em;text-align:center;max-width:420px}
 </style></head><body>
-<h1>robot legs &middot; buttons + LLM &middot; v3 keyframes</h1>
+<h1>robot legs &middot; routine buttons &middot; v3 keyframes</h1>
 <div class=grid>
 <button id=stop onclick="go('stop')">STOP</button>
 <button onclick="go('routine?name=wiggle')">wiggle</button>
@@ -381,61 +361,13 @@ border:1px solid rgba(120,160,200,.25);border-radius:14px;padding:12px;font-size
 <button onclick="go('routine?name=bow')">bow</button>
 <button onclick="go('routine?name=stretch')">stretch</button>
 </div>
-<textarea id=q placeholder="type here - or tap this box and use the keyboard mic to dictate, then hit ask"></textarea>
-<button id=mic onclick="mic()">&#127908; tap to talk</button>
-<button id=ask onclick="ask()">ask Claude to move the legs</button>
-<div id=say></div>
 <div id=st>ready</div>
 <script>
-var st=document.getElementById('st'),say=document.getElementById('say'),q=document.getElementById('q');
-var KEY='%KEY%';
-if(!KEY){ q.style.display='none'; document.getElementById('mic').style.display='none';
- document.getElementById('ask').style.display='none'; }
+var st=document.getElementById('st');
 function go(p){st.textContent='moving...';
  fetch('/'+p).then(function(r){return r.text();}).then(function(t){st.textContent=t;})
  .catch(function(){st.textContent='! no link to robot';});}
-var SYS='You choreograph a small 2-leg desk robot. Each leg is a positional servo with the FULL '+
-'0-180 range (90 = straight-down neutral stance; 0 and 180 are the extreme fore/aft swings). '+
-'You write animation KEYFRAMES: the body glides smoothly from pose to pose, each keyframe taking '+
-'ms to arrive. Repeat a pose to hold it (a rest). Reply with ONLY raw JSON, no fences: '+
-'{"say":"<one short fun sentence>","steps":[{"l":<0-180>,"r":<0-180>,"ms":<120..2000>}]} '+
-'l=left leg, r=right leg. Use the whole range for big expressive moves; just know wide stances '+
-'or fast extremes can tip a small desk robot, so land back near 90 to settle. Max 24 keyframes, '+
-'total under 12000ms. Be expressive: deep bows, high marches, asymmetric struts, dramatic pauses.';
-function ask(){
- var text=q.value.trim(); if(!text){st.textContent='type something first';return;}
- st.textContent='asking Claude...'; say.textContent='';
- fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{
-  'content-type':'application/json','x-api-key':'%KEY%',
-  'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-  body:JSON.stringify({model:'claude-opus-4-8',max_tokens:2000,
-   output_config:{effort:'low'},system:SYS,messages:[{role:'user',content:text}]})})
- .then(function(r){return r.json();})
- .then(function(d){
-  if(d.error){st.textContent='Claude error: '+d.error.message;return;}
-  var txt=''; (d.content||[]).forEach(function(b){if(b.type==='text')txt+=b.text;});
-  txt=txt.replace(/```json|```/g,'').trim();
-  var plan=JSON.parse(txt);
-  say.textContent='Claude: '+(plan.say||'');
-  st.textContent='Claude sent '+plan.steps.length+' keyframes - playing...';
-  return fetch('/act',{method:'POST',headers:{'content-type':'application/json'},
-   body:JSON.stringify({steps:plan.steps,mode:'replace'})})
-   .then(function(r){return r.json();})
-   .then(function(d2){st.textContent=d2.ok?('playing '+d2.queued_ms+'ms of motion'):('! '+d2.err);});})
- .catch(function(e){st.textContent='! '+e.message;});}
-var SR=window.SpeechRecognition||window.webkitSpeechRecognition,rec=null,micb=document.getElementById('mic');
-function mic(){
- if(!SR||!window.isSecureContext){
-  st.textContent='browser mic needs https - tap the text box and use the keyboard mic key instead';
-  q.focus();return;}
- if(rec){rec.stop();return;}
- rec=new SR();rec.lang='en-US';rec.interimResults=true;
- micb.textContent='listening... (tap to stop)';st.textContent='speak now';
- rec.onresult=function(e){var t='';for(var i=0;i<e.results.length;i++)t+=e.results[i][0].transcript;q.value=t;};
- rec.onerror=function(e){st.textContent='mic error: '+e.error;};
- rec.onend=function(){micb.textContent='\\ud83c\\udfa4 tap to talk';rec=null;if(q.value.trim())ask();};
- rec.start();}
-</script></body></html>""".replace("%KEY%", SERVED_KEY)
+</script></body></html>"""
 
 # ---------- WebSocket (persistent /pose stream) ----------
 try:
